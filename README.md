@@ -26,8 +26,10 @@ A [Speedtest](https://www.speedtest.net) exporter for Prometheus.
 ```bash
 $ ./speedtest_exporter --help
 Usage of speedtest_exporter
-  -port string
-        listening port to expose metrics on (default "9090")
+  -web.listen-address string
+        Address on which to expose metrics and web interface (default ":9090")
+  -web.telemetry-path
+        Path under which to expose metrics (default "/metrics")
   -server_fallback
         If the serverID given is not available, should we fallback to closest available server
   -server_id int

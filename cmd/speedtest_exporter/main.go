@@ -1,23 +1,24 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"time"
 
 	"github.com/danopstech/speedtest_exporter/internal/exporter"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	log "github.com/sirupsen/logrus"
-)
-
-const (
-	metricsPath = "/metrics"
 )
 
 func main() {
-	port := flag.String("port", "9090", "listening port to expose metrics on")
+	listenAddress := flag.String("web.listen-address", ":9090", "Address on which to expose metrics and web interface")
+	metricsPath := flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics")
 	serverID := flag.Int("server_id", -1, "Speedtest.net server ID to run test against, -1 will pick the closest server to your location")
 	serverFallback := flag.Bool("server_fallback", false, "If the server_id given is not available, should we fallback to closest available server")
 	flag.Parse()
@@ -30,19 +31,21 @@ func main() {
 	r := prometheus.NewRegistry()
 	r.MustRegister(exporter)
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`<html>
              <head><title>Speedtest Exporter</title></head>
              <body>
              <h1>Speedtest Exporter</h1>
              <p>Metrics page will take approx 40 seconds to load and show results, as the exporter carries out a speedtest when scraped.</p>
-             <p><a href='` + metricsPath + `'>Metrics</a></p>
+             <p><a href='` + *metricsPath + `'>Metrics</a></p>
              <p><a href='/health'>Health</a></p>
              </body>
              </html>`))
 	})
 
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		client := http.Client{
 			Timeout: 3 * time.Second,
 		}
@@ -56,9 +59,40 @@ func main() {
 		}
 	})
 
-	http.Handle(metricsPath, promhttp.HandlerFor(r, promhttp.HandlerOpts{
+	mux.Handle(*metricsPath, promhttp.HandlerFor(r, promhttp.HandlerOpts{
 		MaxRequestsInFlight: 1,
 		Timeout:             60 * time.Second,
 	}))
-	log.Fatal(http.ListenAndServe(":"+*port, nil))
+
+	server := &http.Server{
+		Handler:           mux,
+		Addr:              *listenAddress,
+		ReadTimeout:       time.Second * 30,
+		WriteTimeout:      time.Second * 30,
+		ReadHeaderTimeout: time.Second * 30,
+	}
+
+	exitSignal := make(chan os.Signal, 1)
+	signal.Notify(exitSignal, os.Interrupt)
+
+	go func() {
+		log.Printf("Server is starting on %s", *listenAddress)
+
+		err := server.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("Listening to HTTP: %v", err)
+		}
+	}()
+
+	<-exitSignal
+
+	log.Printf("Recevied exit signal")
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+
+	err = server.Shutdown(ctx)
+	if err != nil {
+		log.Printf("Shutting down server: %v", err)
+	}
 }
