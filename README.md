@@ -47,15 +47,11 @@ For pre-built binaries please take a look at the [releases](https://github.com/d
 
 ### Docker
 
-Docker Images can be found at [GitHub Container Registry](https://github.com/orgs/danopstech/packages/container/package/speedtest_exporter) & [Dockerhub](https://hub.docker.com/r/danopstech/speedtest_exporter).
-
 Example:
 ```bash
-docker pull ghcr.io/danopstech/speedtest_exporter:latest
+docker build -t speedtest_exporter .
 
-docker run \
-  -p 9090:9090 \
-  ghcr.io/danopstech/speedtest_exporter:latest [flags]
+docker run -d -p 9090:9090 speedtest_exporter [flags]
 ```
 
 ### Setup Prometheus to scrape `speedtest_exporter`

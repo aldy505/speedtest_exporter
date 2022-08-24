@@ -67,9 +67,9 @@ func main() {
 	server := &http.Server{
 		Handler:           mux,
 		Addr:              *listenAddress,
-		ReadTimeout:       time.Second * 30,
-		WriteTimeout:      time.Second * 30,
-		ReadHeaderTimeout: time.Second * 30,
+		ReadTimeout:       time.Minute * 10,
+		WriteTimeout:      time.Minute * 10,
+		ReadHeaderTimeout: time.Minute * 10,
 	}
 
 	exitSignal := make(chan os.Signal, 1)
