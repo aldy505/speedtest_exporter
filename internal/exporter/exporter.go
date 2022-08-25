@@ -1,7 +1,13 @@
 package exporter
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -50,13 +56,20 @@ var (
 type Exporter struct {
 	serverID       int
 	serverFallback bool
+	timeout        time.Duration
 }
 
 // New returns an initialized Exporter.
-func New(serverID int, serverFallback bool) (*Exporter, error) {
+func New(serverID int, serverFallback bool, timeout string) (*Exporter, error) {
+	parsedTimeout, err := time.ParseDuration(timeout)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Exporter{
 		serverID:       serverID,
 		serverFallback: serverFallback,
+		timeout:        parsedTimeout,
 	}, nil
 }
 
@@ -74,7 +87,11 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	testUUID := uuid.New().String()
 	start := time.Now()
-	ok := e.speedtest(testUUID, ch)
+
+	ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+	defer cancel()
+
+	ok := e.speedtest(ctx, testUUID, ch)
 
 	if ok {
 		ch <- prometheus.MustNewConstMetric(
@@ -93,15 +110,15 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	}
 }
 
-func (e *Exporter) speedtest(testUUID string, ch chan<- prometheus.Metric) bool {
-	user, err := speedtest.FetchUserInfo()
+func (e *Exporter) speedtest(ctx context.Context, testUUID string, ch chan<- prometheus.Metric) bool {
+	user, err := speedtest.FetchUserInfoContext(ctx)
 	if err != nil {
 		log.Errorf("could not fetch user information: %s", err.Error())
 		return false
 	}
 
 	// returns list of servers in distance order
-	serverList, err := speedtest.FetchServerList(user)
+	serverList, err := speedtest.FetchServerListContext(ctx, user)
 	if err != nil {
 		log.Errorf("could not fetch server list: %s", err.Error())
 		return false
@@ -126,15 +143,15 @@ func (e *Exporter) speedtest(testUUID string, ch chan<- prometheus.Metric) bool 
 		server = servers[0]
 	}
 
-	ok := pingTest(testUUID, user, server, ch)
-	ok = downloadTest(testUUID, user, server, ch) && ok
-	ok = uploadTest(testUUID, user, server, ch) && ok
+	ok := pingTest(ctx, testUUID, user, server, ch)
+	ok = downloadTest(ctx, testUUID, user, server, ch) && ok
+	ok = uploadTest(ctx, testUUID, user, server, ch) && ok
 
 	return ok
 }
 
-func pingTest(testUUID string, user *speedtest.User, server *speedtest.Server, ch chan<- prometheus.Metric) bool {
-	err := server.PingTest()
+func pingTest(ctx context.Context, testUUID string, user *speedtest.User, server *speedtest.Server, ch chan<- prometheus.Metric) bool {
+	err := server.PingTestContext(ctx)
 	if err != nil {
 		log.Errorf("failed to carry out ping test: %s", err.Error())
 		return false
@@ -158,8 +175,47 @@ func pingTest(testUUID string, user *speedtest.User, server *speedtest.Server, c
 	return true
 }
 
-func downloadTest(testUUID string, user *speedtest.User, server *speedtest.Server, ch chan<- prometheus.Metric) bool {
-	err := server.DownloadTest(false)
+func downloadTest(ctx context.Context, testUUID string, user *speedtest.User, server *speedtest.Server, ch chan<- prometheus.Metric) bool {
+	err := server.DownloadTestContext(
+		ctx,
+		false,
+		func(ctx context.Context, dlUrl string) error {
+			size := 750
+			xdlURL := dlUrl + "/random" + strconv.Itoa(size) + "x" + strconv.Itoa(size) + ".jpg"
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, xdlURL, nil)
+			if err != nil {
+				return err
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			_, err = io.Copy(io.Discard, resp.Body)
+
+			return err
+		},
+		func(ctx context.Context, dlUrl string, w int) error {
+			sizes := []int{350, 500, 750, 1000, 1500, 2000, 2500, 3000, 3500, 4000}
+
+			size := sizes[w]
+			xdlURL := dlUrl + "/random" + strconv.Itoa(size) + "x" + strconv.Itoa(size) + ".jpg"
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, xdlURL, nil)
+			if err != nil {
+				return err
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			_, err = io.Copy(io.Discard, resp.Body)
+			return err
+		},
+	)
 	if err != nil {
 		log.Errorf("failed to carry out download test: %s", err.Error())
 		return false
@@ -183,8 +239,51 @@ func downloadTest(testUUID string, user *speedtest.User, server *speedtest.Serve
 	return true
 }
 
-func uploadTest(testUUID string, user *speedtest.User, server *speedtest.Server, ch chan<- prometheus.Metric) bool {
-	err := server.UploadTest(false)
+func uploadTest(ctx context.Context, testUUID string, user *speedtest.User, server *speedtest.Server, ch chan<- prometheus.Metric) bool {
+	err := server.UploadTestContext(
+		ctx,
+		false,
+		func(ctx context.Context, ulURL string) error {
+			size := 1000
+			v := url.Values{}
+			v.Add("content", strings.Repeat("0123456789", size*100-51))
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, ulURL, strings.NewReader(v.Encode()))
+			if err != nil {
+				return err
+			}
+
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			_, err = io.Copy(io.Discard, resp.Body)
+			return err
+		},
+		func(ctx context.Context, ulURL string, w int) error {
+			sizes := []int{100, 300, 500, 800, 1000, 1500, 2500, 3000, 3500, 4000}
+			size := sizes[w]
+			v := url.Values{}
+			v.Add("content", strings.Repeat("0123456789", size*100-51))
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, ulURL, strings.NewReader(v.Encode()))
+			if err != nil {
+				return err
+			}
+
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+
+			_, err = io.Copy(io.Discard, resp.Body)
+			return err
+		},
+	)
 	if err != nil {
 		log.Errorf("failed to carry out upload test: %s", err.Error())
 		return false

@@ -34,6 +34,8 @@ Usage of speedtest_exporter
         If the serverID given is not available, should we fallback to closest available server
   -server_id int
         Speedtest.net server ID to run test against, -1 will pick the closest server to your location (default -1)
+  -speedtest_timeout
+        Timeout duration to limit caller to the Speedtest server. Use a time.Duration format (default "5m")
 
 ```
 

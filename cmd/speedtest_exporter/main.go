@@ -21,9 +21,16 @@ func main() {
 	metricsPath := flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics")
 	serverID := flag.Int("server_id", -1, "Speedtest.net server ID to run test against, -1 will pick the closest server to your location")
 	serverFallback := flag.Bool("server_fallback", false, "If the server_id given is not available, should we fallback to closest available server")
+	callTimeout := flag.String("speedtest_timeout", "5m", "Timeout duration to limit caller to the Speedtest server. Use a time.Duration format")
+
 	flag.Parse()
 
-	exporter, err := exporter.New(*serverID, *serverFallback)
+	exporter, err := exporter.New(*serverID, *serverFallback, *callTimeout)
+	if err != nil {
+		panic(err)
+	}
+
+	parsedCallTimeout, err := time.ParseDuration(*callTimeout)
 	if err != nil {
 		panic(err)
 	}
@@ -61,7 +68,7 @@ func main() {
 
 	mux.Handle(*metricsPath, promhttp.HandlerFor(r, promhttp.HandlerOpts{
 		MaxRequestsInFlight: 1,
-		Timeout:             60 * time.Second,
+		Timeout:             parsedCallTimeout,
 	}))
 
 	server := &http.Server{
